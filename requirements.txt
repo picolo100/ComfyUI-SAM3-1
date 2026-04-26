@@ -1,0 +1,11 @@
+setuptools<70
+huggingface_hub>=0.20.0
+Pillow>=9.4.0
+numpy>=1.26.0,<2.0.0
+timm>=1.0.17
+ftfy==6.1.1
+iopath>=0.1.10
+tqdm>=4.66.1
+regex
+safetensors
+einops
