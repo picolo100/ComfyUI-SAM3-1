@@ -20,7 +20,7 @@ Via ComfyUI Manager — search for `ComfyUI-SAM3.1`
 Or manually:
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/YOUR_USERNAME/ComfyUI-SAM3.1.git ComfyUI-SAM3-1
+git clone https://github.com/picolo100/ComfyUI-SAM3-1.git
 cd ComfyUI-SAM3-1
 pip install -r requirements.txt
 ```
