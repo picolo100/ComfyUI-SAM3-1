@@ -15,7 +15,7 @@ Native SAM3/SAM3.1 video masking nodes for ComfyUI — patched for NVIDIA Blackw
 
 ## Installation
 
-Via ComfyUI Manager — search for `ComfyUI-SAM3.1`
+Via ComfyUI Manager — search for `ComfyUI-SAM3-1`
 
 Or manually:
 ```bash
