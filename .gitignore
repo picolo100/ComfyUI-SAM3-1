@@ -9,3 +9,4 @@ build/
 *.pth
 *.safetensors
 .DS_Store
+*.ipynb_checkpoints
