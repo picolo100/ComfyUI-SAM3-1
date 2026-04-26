@@ -1,0 +1,424 @@
+{
+  "id": "bc7f34c8-85fd-4405-a559-dd585037ca78",
+  "revision": 0,
+  "last_node_id": 23,
+  "last_link_id": 28,
+  "nodes": [
+    {
+      "id": 12,
+      "type": "LoadNativeSAM3VideoModel",
+      "pos": [
+        776.0960585535615,
+        80.55474379719443
+      ],
+      "size": [
+        378.9,
+        250
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "sam3_native_model",
+          "type": "SAM3NATIVEMODEL",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "picolo100/ComfyUI-SAM3-1",
+        "ver": "a5a4ae87833d6e90125a727a675b0fe801492a93",
+        "Node name for S&R": "LoadNativeSAM3VideoModel"
+      },
+      "widgets_values": [
+        "sam3.1_multiplex.pt",
+        "cuda",
+        "fp32",
+        "0",
+        "multiplex",
+        false,
+        false,
+        "auto",
+        7
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 14,
+      "type": "MaskToImage",
+      "pos": [
+        1760.2960343439452,
+        389.2543652104168
+      ],
+      "size": [
+        193.9,
+        26
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.19.5",
+        "Node name for S&R": "MaskToImage"
+      },
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 16,
+      "type": "VHS_VideoInfo",
+      "pos": [
+        1358.4843875370334,
+        35.0351842186818
+      ],
+      "size": [
+        233,
+        206
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "source_fps🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "source_frame_count🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "source_duration🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "source_width🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "source_height🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_fps🟦",
+          "type": "FLOAT",
+          "links": [
+            27
+          ]
+        },
+        {
+          "name": "loaded_frame_count🟦",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_duration🟦",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "loaded_width🟦",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_height🟦",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoInfo"
+      },
+      "color": "#222",
+      "bgcolor": "#000",
+      "widgets_values": {}
+    },
+    {
+      "id": 11,
+      "type": "NativeSam3VideoMask",
+      "pos": [
+        1272.87062859571,
+        450.0486734145492
+      ],
+      "size": [
+        327,
+        190
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sam3_native_model",
+          "type": "SAM3NATIVEMODEL",
+          "link": 10
+        },
+        {
+          "name": "video_frames",
+          "type": "IMAGE",
+          "link": 28
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": [
+            25
+          ]
+        },
+        {
+          "name": "bboxes",
+          "type": "BBOX",
+          "links": null
+        },
+        {
+          "name": "detected_object_ids",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "multi_mask",
+          "type": "SAM3_MULTI_MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "picolo100/ComfyUI-SAM3-1",
+        "ver": "a5a4ae87833d6e90125a727a675b0fe801492a93",
+        "Node name for S&R": "NativeSam3VideoMask"
+      },
+      "widgets_values": [
+        "person",
+        0,
+        0.2,
+        true
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 23,
+      "type": "Reroute",
+      "pos": [
+        1087.8379879286967,
+        550.6845463706708
+      ],
+      "size": [
+        75,
+        26
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "",
+          "type": "*",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "*",
+          "links": [
+            28
+          ]
+        }
+      ],
+      "properties": {
+        "showOutputText": false,
+        "horizontal": false
+      }
+    },
+    {
+      "id": 22,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2237.309687928694,
+        245.39034637067064
+      ],
+      "size": [
+        219,
+        334
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 26
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "AnimateDiff",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 10,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {}
+        }
+      },
+      "color": "#222",
+      "bgcolor": "#000"
+    }
+  ],
+  "links": [
+    [
+      10,
+      12,
+      0,
+      11,
+      0,
+      "SAM3NATIVEMODEL"
+    ],
+    [
+      25,
+      11,
+      0,
+      14,
+      0,
+      "MASK"
+    ],
+    [
+      26,
+      14,
+      0,
+      22,
+      0,
+      "IMAGE"
+    ],
+    [
+      27,
+      16,
+      5,
+      22,
+      4,
+      "FLOAT"
+    ],
+    [
+      28,
+      23,
+      0,
+      11,
+      1,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 2,
+      "title": "load video",
+      "bounding": [
+        903.5486879286966,
+        491.8563463706708,
+        215,
+        222.99999999999994
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7513148009015781,
+      "offset": [
+        -569.6033729286974,
+        366.2760096293298
+      ]
+    },
+    "frontendVersion": "1.42.14",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
