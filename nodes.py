@@ -86,7 +86,7 @@ def _get_sam3_builders():
         sam3_path = getattr(sam3_module, '__file__', '')
         
         # Detect if it's from a custom_nodes bundle (bad)
-        if 'custom_nodes' in sam3_path:
+        if sam3_path and 'custom_nodes' in sam3_path:
             print(f"[SAM3 Native] WARNING: Found bundled sam3 at {sam3_path}")
             print(f"[SAM3 Native] This may be incompatible with SAM3.1 checkpoints.")
             print(f"[SAM3 Native] Consider removing it and installing the latest from GitHub.")
