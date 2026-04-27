@@ -830,6 +830,8 @@ class NativeSam3VideoMask:
                       threshold: float = 0.5, keep_model_loaded: bool = True):
         
         predictor = sam3_native_model["predictor"]
+        if predictor is None:
+            raise RuntimeError("SAM3 model was unloaded. Please re-run the Model Loader node.")
         is_sam31 = sam3_native_model["is_sam31"]
         
         print(f"[SAM3 Native] Processing video with text prompt: '{text_prompt}'")
