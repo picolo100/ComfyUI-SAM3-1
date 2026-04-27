@@ -30,6 +30,11 @@ from collections import OrderedDict
 from PIL import Image
 import folder_paths
 import comfy.model_management as mm
+try:
+    from sam3.auto_dtype import enable_sam3_patches, disable_sam3_patches
+except ImportError:
+    def enable_sam3_patches(): pass
+    def disable_sam3_patches(): pass
 
 # Inference cache — avoids re-running propagation when downstream nodes re-execute
 class _InferenceCache:
@@ -870,6 +875,7 @@ class NativeSam3VideoMask:
             gc.collect()
 
             # Start session with folder path — SAM3 uses AsyncImageFrameLoader
+            enable_sam3_patches()
             print(f"[SAM3 Native] Starting tracking session...")
             response = predictor.handle_request(
                 request=dict(
@@ -1178,283 +1184,286 @@ class NativeSam3VideoMaskWithPrompts:
             # Wrap all predictor calls with autocast (matching the working VideoMasking node)
             _amp_ctx = torch.cuda.amp.autocast(enabled=use_autocast, dtype=autocast_dtype)
             _amp_ctx.__enter__()
-
-            # start_session with folder path — SAM3 uses AsyncImageFrameLoader
-            # to load frames lazily on-demand (no giant upfront allocation).
-            print(f"[SAM3 Native] Starting tracking session...")
-            response = predictor.handle_request(
-                request=dict(
-                    type="start_session",
-                    resource_path=temp_dir,
-                    offload_video_to_cpu=True,
-                )
-            )
-            session_id = response["session_id"]
-            print(f"[SAM3 Native] Session started: {session_id}")
-
-            # Conditionally apply CPU offload on the inference state.
-            # In speed mode, keep everything on GPU for maximum throughput.
-            # In balanced/low_memory mode, offload to CPU to prevent VRAM OOM.
-            import time
-            session_data = predictor._all_inference_states.get(session_id)
-            inference_state = session_data["state"] if session_data else None
-            if inference_state is not None and offload_to_cpu:
-                inference_state["offload_state_to_cpu"] = True
-                inference_state["storage_device"] = torch.device("cpu")
-                print(f"[SAM3 Native] Patched inference state: storage_device=cpu")
-            elif inference_state is not None:
-                print(f"[SAM3 Native] Speed mode: inference state stays on GPU")
-            # Wait for async frame loader to finish
-            images_obj = inference_state.get("images") if inference_state else None
-            max_wait = 300
-            total_waited = 0
-            if images_obj is not None and hasattr(images_obj, 'all_frames_loaded'):
-                while not images_obj.all_frames_loaded and total_waited < max_wait:
-                    time.sleep(0.5)
-                    total_waited += 0.5
-                loaded = getattr(images_obj, 'num_loaded_frames', '?')
-                print(f"[SAM3 Native] Frame loading complete: {loaded}/{num_frames} frames ({total_waited:.1f}s)")
-            else:
-                wait_time = min(10.0, num_frames * 0.02)
-                time.sleep(wait_time)
-                print(f"[SAM3 Native] Waited {wait_time:.1f}s for frame loading (estimated)")
-
-            # NOTE: Do NOT call reset_session here. It clears cached_frame_outputs
-            # and feature_cache which are needed for SAM2 point-based tracking.
-            # The session is already fresh from start_session.
-
-            # Get actual frame count from session and clamp frame_index
             try:
+
+                # start_session with folder path — SAM3 uses AsyncImageFrameLoader
+                # to load frames lazily on-demand (no giant upfront allocation).
+                print(f"[SAM3 Native] Starting tracking session...")
+                response = predictor.handle_request(
+                    request=dict(
+                        type="start_session",
+                        resource_path=temp_dir,
+                        offload_video_to_cpu=True,
+                    )
+                )
+                session_id = response["session_id"]
+                print(f"[SAM3 Native] Session started: {session_id}")
+
+                # Conditionally apply CPU offload on the inference state.
+                # In speed mode, keep everything on GPU for maximum throughput.
+                # In balanced/low_memory mode, offload to CPU to prevent VRAM OOM.
+                import time
                 session_data = predictor._all_inference_states.get(session_id)
-                if session_data:
-                    model_num_frames = session_data["state"].get("num_frames", num_frames)
-                    if frame_index >= model_num_frames:
-                        print(f"[SAM3 Native] WARNING: frame_index {frame_index} >= model frames {model_num_frames}, clamping to {model_num_frames - 1}")
-                        frame_index = model_num_frames - 1
-            except Exception:
-                pass
-
-            # Pre-seed cached_frame_outputs BEFORE add_prompt.
-            # Required: _build_sam2_output returns {} for frames not in cache.
-            try:
-                session_data = predictor._all_inference_states.get(session_id)
-                if session_data:
-                    inference_state = session_data["state"]
-                    actual_frames = inference_state.get("num_frames", num_frames)
-                    cache = inference_state.setdefault("cached_frame_outputs", {})
-                    seeded = 0
-                    for i in range(actual_frames):
-                        if i not in cache:
-                            cache[i] = {}
-                            seeded += 1
-                    print(f"[SAM3 Native] Pre-seeded {seeded} frames (model has {actual_frames} frames)")
-            except Exception as e:
-                print(f"[SAM3 Native] Warning: Could not pre-seed cache: {e}")
-
-            # =================================================================
-            # COLLECT ALL PROMPTS FROM ALL SOURCES
-            # Combines: object_prompts + multi_prompts + direct points/bboxes
-            # All inputs are converted to POINTS for the SAM2 tracker path.
-            # The SAM3.1 multiplex model routes point prompts through SAM2,
-            # which handles propagation correctly. Boxes are converted to
-            # corner points (labels 2=top-left, 3=bottom-right).
-            # =================================================================
-            native_prompts = []
-            current_obj_id = 1
-
-            # --- Source 1: object_prompts (from Sam3ObjectPrompt nodes) ---
-            if object_prompts:
-                obj_prompts = normalize_object_prompts_for_native(
-                    object_prompts, frame_w, frame_h
-                )
-                for p in obj_prompts:
-                    p["object_id"] = current_obj_id
-                    # Convert box to corner points so everything uses SAM2 path
-                    if p["box"] is not None:
-                        bx, by, bw, bh = p["box"]
-                        p["points"].append([bx, by])
-                        p["labels"].append(2)  # top-left corner
-                        p["points"].append([bx + bw, by + bh])
-                        p["labels"].append(3)  # bottom-right corner
-                        p["box"] = None
-                    native_prompts.append(p)
-                    current_obj_id += 1
-
-            # --- Source 2: multi_prompts (from SAM3MultiRegionCollector) ---
-            if multi_prompts:
-                multi_p = normalize_multi_prompts_for_native(
-                    multi_prompts, frame_w, frame_h
-                )
-                for p in multi_p:
-                    p["object_id"] = current_obj_id
-                    # Convert box to corner points
-                    if p["box"] is not None:
-                        bx, by, bw, bh = p["box"]
-                        p["points"].append([bx, by])
-                        p["labels"].append(2)
-                        p["points"].append([bx + bw, by + bh])
-                        p["labels"].append(3)
-                        p["box"] = None
-                    native_prompts.append(p)
-                    current_obj_id += 1
-
-            # --- Source 3: direct positive_points/negative_points/bboxes ---
-            if bboxes is not None:
-                print(f"[SAM3 Native] Raw bboxes input: {bboxes}")
-            pos_pts = self._normalize_points_to_relative(positive_points, frame_w, frame_h)
-            neg_pts = self._normalize_points_to_relative(negative_points, frame_w, frame_h)
-            rel_boxes = self._normalize_bboxes_to_relative(bboxes, frame_w, frame_h)
-            if rel_boxes:
-                print(f"[SAM3 Native] Normalized bboxes (relative): {rel_boxes}")
-
-            if pos_pts or neg_pts or rel_boxes:
-                # Combine direct points + first box into one object
-                direct_points = []
-                direct_labels = []
-                for pt in pos_pts:
-                    direct_points.append(pt)
-                    direct_labels.append(1)
-                for pt in neg_pts:
-                    direct_points.append(pt)
-                    direct_labels.append(0)
-
-                if rel_boxes:
-                    # Convert first box to corner points
-                    box = rel_boxes[0]
-                    direct_points.append([box[0], box[1]])
-                    direct_labels.append(2)  # top-left
-                    direct_points.append([box[2], box[3]])
-                    direct_labels.append(3)  # bottom-right
-
-                if direct_points:
-                    native_prompts.append({
-                        "object_id": current_obj_id,
-                        "points": direct_points,
-                        "labels": direct_labels,
-                        "box": None,
-                    })
-                    current_obj_id += 1
-
-                # Additional bboxes become separate objects (as corner points)
-                for box in rel_boxes[1:]:
-                    native_prompts.append({
-                        "object_id": current_obj_id,
-                        "points": [[box[0], box[1]], [box[2], box[3]]],
-                        "labels": [2, 3],
-                        "box": None,
-                    })
-                    current_obj_id += 1
-
-            added_obj_ids = set()
-
-            print(f"[SAM3 Native] Processing {len(native_prompts)} prompts from all sources...")
-
-            for prompt in native_prompts:
-                obj_id = prompt["object_id"]
-                has_points = bool(prompt["points"])
-
-                print(f"[SAM3 Native]   Object {obj_id}: {len(prompt.get('points', []))} points, labels={prompt.get('labels', [])}")
-
-                if not has_points:
-                    print(f"[SAM3 Native]   Skipping - no points")
-                    continue
-
-                # All prompts use points (boxes converted to corner points above)
-                # This ensures we go through the SAM2 tracker path in the multiplex model
-                # Explicit float32 ensures no dtype mismatch from leaked autocast state
-                request = dict(
-                    type="add_prompt",
-                    session_id=session_id,
-                    frame_index=frame_index,
-                    obj_id=obj_id,
-                    points=torch.tensor(prompt["points"], dtype=torch.float32).cpu(),
-                    point_labels=torch.tensor(prompt["labels"], dtype=torch.int32).cpu(),
-                )
-
-                print(f"[SAM3 Native]   Sending add_prompt for obj_id={obj_id}, points={prompt['points']}, labels={prompt['labels']}")
-                response = predictor.handle_request(request=request)
-                out = response.get("outputs", {}) if response else {}
-
-                # The multiplex model's SAM2 path may return empty out_obj_ids
-                # on add_prompt (cached_frame_outputs not yet populated).
-                # This is expected - the object IS registered internally.
-                # We track it and rely on propagation to produce masks.
-                added_obj_ids.add(obj_id)
-                out_obj_ids = out.get("out_obj_ids", []) if out else []
-                if len(out_obj_ids) > 0:
-                    print(f"[SAM3 Native]   OK - initial mask for IDs: {[int(x) for x in out_obj_ids]}")
+                inference_state = session_data["state"] if session_data else None
+                if inference_state is not None and offload_to_cpu:
+                    inference_state["offload_state_to_cpu"] = True
+                    inference_state["storage_device"] = torch.device("cpu")
+                    print(f"[SAM3 Native] Patched inference state: storage_device=cpu")
+                elif inference_state is not None:
+                    print(f"[SAM3 Native] Speed mode: inference state stays on GPU")
+                # Wait for async frame loader to finish
+                images_obj = inference_state.get("images") if inference_state else None
+                max_wait = 300
+                total_waited = 0
+                if images_obj is not None and hasattr(images_obj, 'all_frames_loaded'):
+                    while not images_obj.all_frames_loaded and total_waited < max_wait:
+                        time.sleep(0.5)
+                        total_waited += 0.5
+                    loaded = getattr(images_obj, 'num_loaded_frames', '?')
+                    print(f"[SAM3 Native] Frame loading complete: {loaded}/{num_frames} frames ({total_waited:.1f}s)")
                 else:
-                    print(f"[SAM3 Native]   Object {obj_id} registered (mask will appear after propagation)")
+                    wait_time = min(10.0, num_frames * 0.02)
+                    time.sleep(wait_time)
+                    print(f"[SAM3 Native] Waited {wait_time:.1f}s for frame loading (estimated)")
 
-            print(f"[SAM3 Native] Added objects: {sorted(added_obj_ids)}")
+                # NOTE: Do NOT call reset_session here. It clears cached_frame_outputs
+                # and feature_cache which are needed for SAM2 point-based tracking.
+                # The session is already fresh from start_session.
 
-            if not added_obj_ids:
-                print(f"[SAM3 Native] No objects added - returning empty masks")
-                predictor.handle_request(
-                    request=dict(type="close_session", session_id=session_id)
-                )
-                empty_mask = torch.zeros((num_frames, frame_h, frame_w), dtype=torch.float32)
-                return (empty_mask, None, "", {"masks_per_frame_per_obj": {}, "object_ids": [], "num_frames": num_frames, "frame_size": (frame_h, frame_w)})
+                # Get actual frame count from session and clamp frame_index
+                try:
+                    session_data = predictor._all_inference_states.get(session_id)
+                    if session_data:
+                        model_num_frames = session_data["state"].get("num_frames", num_frames)
+                        if frame_index >= model_num_frames:
+                            print(f"[SAM3 Native] WARNING: frame_index {frame_index} >= model frames {model_num_frames}, clamping to {model_num_frames - 1}")
+                            frame_index = model_num_frames - 1
+                except Exception:
+                    pass
 
-            # NOTE: Do NOT pre-seed cached_frame_outputs. Pre-seeding all frames
-            # with empty dicts breaks backward propagation and non-zero frame_index
-            # (masks appear only on the prompt frame). The SAM3.1 propagation
-            # populates the cache as it processes frames.
+                # Pre-seed cached_frame_outputs BEFORE add_prompt.
+                # Required: _build_sam2_output returns {} for frames not in cache.
+                try:
+                    session_data = predictor._all_inference_states.get(session_id)
+                    if session_data:
+                        inference_state = session_data["state"]
+                        actual_frames = inference_state.get("num_frames", num_frames)
+                        cache = inference_state.setdefault("cached_frame_outputs", {})
+                        seeded = 0
+                        for i in range(actual_frames):
+                            if i not in cache:
+                                cache[i] = {}
+                                seeded += 1
+                        print(f"[SAM3 Native] Pre-seeded {seeded} frames (model has {actual_frames} frames)")
+                except Exception as e:
+                    print(f"[SAM3 Native] Warning: Could not pre-seed cache: {e}")
 
-            # Auto-fix direction at video boundaries: "both" from the last frame
-            # breaks because forward has nowhere to go; same for first frame backward.
-            if propagation_direction == "both":
-                if frame_index >= num_frames - 1:
-                    propagation_direction = "backward"
-                    print(f"[SAM3 Native] Auto-switched direction to 'backward' (prompt on last frame)")
-                elif frame_index == 0:
-                    propagation_direction = "forward"
-                    print(f"[SAM3 Native] Auto-switched direction to 'forward' (prompt on first frame)")
+                # =================================================================
+                # COLLECT ALL PROMPTS FROM ALL SOURCES
+                # Combines: object_prompts + multi_prompts + direct points/bboxes
+                # All inputs are converted to POINTS for the SAM2 tracker path.
+                # The SAM3.1 multiplex model routes point prompts through SAM2,
+                # which handles propagation correctly. Boxes are converted to
+                # corner points (labels 2=top-left, 3=bottom-right).
+                # =================================================================
+                native_prompts = []
+                current_obj_id = 1
 
-            # Propagate masks through video
-            # Pass start_frame_index so _get_processing_order doesn't require
-            # previous_stages_out (which is only populated by text/detection prompts)
-            # Capture the last add_prompt response so we can fill the prompt
-            # frame if propagation skips it (backward mode excludes start frame)
-            last_add_prompt_out = out
+                # --- Source 1: object_prompts (from Sam3ObjectPrompt nodes) ---
+                if object_prompts:
+                    obj_prompts = normalize_object_prompts_for_native(
+                        object_prompts, frame_w, frame_h
+                    )
+                    for p in obj_prompts:
+                        p["object_id"] = current_obj_id
+                        # Convert box to corner points so everything uses SAM2 path
+                        if p["box"] is not None:
+                            bx, by, bw, bh = p["box"]
+                            p["points"].append([bx, by])
+                            p["labels"].append(2)  # top-left corner
+                            p["points"].append([bx + bw, by + bh])
+                            p["labels"].append(3)  # bottom-right corner
+                            p["box"] = None
+                        native_prompts.append(p)
+                        current_obj_id += 1
 
-            print(f"[SAM3 Native] Propagating masks through video from frame {frame_index} ({propagation_direction})...")
-            outputs_per_frame = {}
-            detected_obj_ids = set()
-            for response in predictor.handle_stream_request(
-                request=dict(
-                    type="propagate_in_video",
-                    session_id=session_id,
-                    start_frame_index=frame_index,
-                    propagation_direction=propagation_direction,
-                )
-            ):
-                fidx = response["frame_index"]
-                fout = response["outputs"]
-                # In balanced/low_memory mode, move mask tensors to CPU immediately
-                # to avoid VRAM accumulation over thousands of frames.
-                # In speed mode, keep on GPU to avoid transfer overhead.
-                if offload_to_cpu:
-                    for _k in ("out_mask_logits", "out_binary_masks"):
-                        if _k in fout and isinstance(fout[_k], torch.Tensor):
-                            fout[_k] = fout[_k].cpu()
-                outputs_per_frame[fidx] = fout
-                if fidx in (0, 1, frame_index, frame_index - 1):
-                    f_oids = fout.get("out_obj_ids", [])
-                    f_masks = fout.get("out_binary_masks", fout.get("out_mask_logits", None))
-                    n_m = len(f_masks) if f_masks is not None else 0
-                    print(f"[SAM3 Native]   Frame {fidx}: obj_ids={[int(x) for x in f_oids]}, n_masks={n_m}")
+                # --- Source 2: multi_prompts (from SAM3MultiRegionCollector) ---
+                if multi_prompts:
+                    multi_p = normalize_multi_prompts_for_native(
+                        multi_prompts, frame_w, frame_h
+                    )
+                    for p in multi_p:
+                        p["object_id"] = current_obj_id
+                        # Convert box to corner points
+                        if p["box"] is not None:
+                            bx, by, bw, bh = p["box"]
+                            p["points"].append([bx, by])
+                            p["labels"].append(2)
+                            p["points"].append([bx + bw, by + bh])
+                            p["labels"].append(3)
+                            p["box"] = None
+                        native_prompts.append(p)
+                        current_obj_id += 1
 
-            # If the prompt frame wasn't included in propagation output (happens
-            # in backward mode where processing_order starts at start_frame-1),
-            # fill it from the add_prompt response so masks aren't dropped.
-            if frame_index not in outputs_per_frame and last_add_prompt_out:
-                outputs_per_frame[frame_index] = last_add_prompt_out
-                print(f"[SAM3 Native]   Frame {frame_index} (prompt frame): filled from add_prompt response")
+                # --- Source 3: direct positive_points/negative_points/bboxes ---
+                if bboxes is not None:
+                    print(f"[SAM3 Native] Raw bboxes input: {bboxes}")
+                pos_pts = self._normalize_points_to_relative(positive_points, frame_w, frame_h)
+                neg_pts = self._normalize_points_to_relative(negative_points, frame_w, frame_h)
+                rel_boxes = self._normalize_bboxes_to_relative(bboxes, frame_w, frame_h)
+                if rel_boxes:
+                    print(f"[SAM3 Native] Normalized bboxes (relative): {rel_boxes}")
 
-            print(f"[SAM3 Native] Propagation complete, got {len(outputs_per_frame)} frames")
+                if pos_pts or neg_pts or rel_boxes:
+                    # Combine direct points + first box into one object
+                    direct_points = []
+                    direct_labels = []
+                    for pt in pos_pts:
+                        direct_points.append(pt)
+                        direct_labels.append(1)
+                    for pt in neg_pts:
+                        direct_points.append(pt)
+                        direct_labels.append(0)
 
-            _amp_ctx.__exit__(None, None, None)
+                    if rel_boxes:
+                        # Convert first box to corner points
+                        box = rel_boxes[0]
+                        direct_points.append([box[0], box[1]])
+                        direct_labels.append(2)  # top-left
+                        direct_points.append([box[2], box[3]])
+                        direct_labels.append(3)  # bottom-right
+
+                    if direct_points:
+                        native_prompts.append({
+                            "object_id": current_obj_id,
+                            "points": direct_points,
+                            "labels": direct_labels,
+                            "box": None,
+                        })
+                        current_obj_id += 1
+
+                    # Additional bboxes become separate objects (as corner points)
+                    for box in rel_boxes[1:]:
+                        native_prompts.append({
+                            "object_id": current_obj_id,
+                            "points": [[box[0], box[1]], [box[2], box[3]]],
+                            "labels": [2, 3],
+                            "box": None,
+                        })
+                        current_obj_id += 1
+
+                added_obj_ids = set()
+
+                print(f"[SAM3 Native] Processing {len(native_prompts)} prompts from all sources...")
+
+                for prompt in native_prompts:
+                    obj_id = prompt["object_id"]
+                    has_points = bool(prompt["points"])
+
+                    print(f"[SAM3 Native]   Object {obj_id}: {len(prompt.get('points', []))} points, labels={prompt.get('labels', [])}")
+
+                    if not has_points:
+                        print(f"[SAM3 Native]   Skipping - no points")
+                        continue
+
+                    # All prompts use points (boxes converted to corner points above)
+                    # This ensures we go through the SAM2 tracker path in the multiplex model
+                    # Explicit float32 ensures no dtype mismatch from leaked autocast state
+                    request = dict(
+                        type="add_prompt",
+                        session_id=session_id,
+                        frame_index=frame_index,
+                        obj_id=obj_id,
+                        points=torch.tensor(prompt["points"], dtype=torch.float32).cpu(),
+                        point_labels=torch.tensor(prompt["labels"], dtype=torch.int32).cpu(),
+                    )
+
+                    print(f"[SAM3 Native]   Sending add_prompt for obj_id={obj_id}, points={prompt['points']}, labels={prompt['labels']}")
+                    response = predictor.handle_request(request=request)
+                    out = response.get("outputs", {}) if response else {}
+
+                    # The multiplex model's SAM2 path may return empty out_obj_ids
+                    # on add_prompt (cached_frame_outputs not yet populated).
+                    # This is expected - the object IS registered internally.
+                    # We track it and rely on propagation to produce masks.
+                    added_obj_ids.add(obj_id)
+                    out_obj_ids = out.get("out_obj_ids", []) if out else []
+                    if len(out_obj_ids) > 0:
+                        print(f"[SAM3 Native]   OK - initial mask for IDs: {[int(x) for x in out_obj_ids]}")
+                    else:
+                        print(f"[SAM3 Native]   Object {obj_id} registered (mask will appear after propagation)")
+
+                print(f"[SAM3 Native] Added objects: {sorted(added_obj_ids)}")
+
+                if not added_obj_ids:
+                    print(f"[SAM3 Native] No objects added - returning empty masks")
+                    predictor.handle_request(
+                        request=dict(type="close_session", session_id=session_id)
+                    )
+                    empty_mask = torch.zeros((num_frames, frame_h, frame_w), dtype=torch.float32)
+                    return (empty_mask, None, "", {"masks_per_frame_per_obj": {}, "object_ids": [], "num_frames": num_frames, "frame_size": (frame_h, frame_w)})
+
+                # NOTE: Do NOT pre-seed cached_frame_outputs. Pre-seeding all frames
+                # with empty dicts breaks backward propagation and non-zero frame_index
+                # (masks appear only on the prompt frame). The SAM3.1 propagation
+                # populates the cache as it processes frames.
+
+                # Auto-fix direction at video boundaries: "both" from the last frame
+                # breaks because forward has nowhere to go; same for first frame backward.
+                if propagation_direction == "both":
+                    if frame_index >= num_frames - 1:
+                        propagation_direction = "backward"
+                        print(f"[SAM3 Native] Auto-switched direction to 'backward' (prompt on last frame)")
+                    elif frame_index == 0:
+                        propagation_direction = "forward"
+                        print(f"[SAM3 Native] Auto-switched direction to 'forward' (prompt on first frame)")
+
+                # Propagate masks through video
+                # Pass start_frame_index so _get_processing_order doesn't require
+                # previous_stages_out (which is only populated by text/detection prompts)
+                # Capture the last add_prompt response so we can fill the prompt
+                # frame if propagation skips it (backward mode excludes start frame)
+                last_add_prompt_out = out
+
+                print(f"[SAM3 Native] Propagating masks through video from frame {frame_index} ({propagation_direction})...")
+                outputs_per_frame = {}
+                detected_obj_ids = set()
+                for response in predictor.handle_stream_request(
+                    request=dict(
+                        type="propagate_in_video",
+                        session_id=session_id,
+                        start_frame_index=frame_index,
+                        propagation_direction=propagation_direction,
+                    )
+                ):
+                    fidx = response["frame_index"]
+                    fout = response["outputs"]
+                    # In balanced/low_memory mode, move mask tensors to CPU immediately
+                    # to avoid VRAM accumulation over thousands of frames.
+                    # In speed mode, keep on GPU to avoid transfer overhead.
+                    if offload_to_cpu:
+                        for _k in ("out_mask_logits", "out_binary_masks"):
+                            if _k in fout and isinstance(fout[_k], torch.Tensor):
+                                fout[_k] = fout[_k].cpu()
+                    outputs_per_frame[fidx] = fout
+                    if fidx in (0, 1, frame_index, frame_index - 1):
+                        f_oids = fout.get("out_obj_ids", [])
+                        f_masks = fout.get("out_binary_masks", fout.get("out_mask_logits", None))
+                        n_m = len(f_masks) if f_masks is not None else 0
+                        print(f"[SAM3 Native]   Frame {fidx}: obj_ids={[int(x) for x in f_oids]}, n_masks={n_m}")
+
+                # If the prompt frame wasn't included in propagation output (happens
+                # in backward mode where processing_order starts at start_frame-1),
+                # fill it from the add_prompt response so masks aren't dropped.
+                if frame_index not in outputs_per_frame and last_add_prompt_out:
+                    outputs_per_frame[frame_index] = last_add_prompt_out
+                    print(f"[SAM3 Native]   Frame {frame_index} (prompt frame): filled from add_prompt response")
+
+                print(f"[SAM3 Native] Propagation complete, got {len(outputs_per_frame)} frames")
+
+            finally:
+                _amp_ctx.__exit__(None, None, None)
+                disable_sam3_patches()
 
             # Build output masks
             output_masks = []

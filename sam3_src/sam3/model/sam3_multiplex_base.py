@@ -169,8 +169,8 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
         self.fill_hole_area = fill_hole_area
         # use bfloat16 inference for Flash Attention kernel
         self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        # bf16_context disabled for Blackwell compatibility
-        self.bf16_context.__enter__()
+        # bf16_context.__enter__() disabled: leaks global autocast state and breaks torch.compile in other nodes
+        # self.bf16_context.__enter__()
 
     def __getattr__(self, name):
         # Expose all attributes of the underlying model
@@ -2856,5 +2856,5 @@ class Sam3MultiplexPredictorWrapper(Sam3MultiplexTrackerPredictor):
 
         # use bfloat16 inference for Flash Attention kernel
         self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        # bf16_context disabled for Blackwell compatibility
-        self.bf16_context.__enter__()
+        # bf16_context.__enter__() disabled: leaks global autocast state and breaks torch.compile in other nodes
+        # self.bf16_context.__enter__()

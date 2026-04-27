@@ -49,8 +49,8 @@ class Sam3MultiplexVideoPredictor(Sam3BasePredictor):
         torch.backends.cudnn.allow_tf32 = True
         # use bfloat16 inference for Flash Attention kernel
         self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        # bf16_context disabled for Blackwell
-        self.bf16_context.__enter__()
+        # bf16_context.__enter__() disabled: leaks global autocast state and breaks torch.compile in other nodes
+        # self.bf16_context.__enter__()
 
         if warm_up:
             self.model._warm_up_complete = False
