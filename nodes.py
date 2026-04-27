@@ -367,7 +367,7 @@ def download_sam3_model(model_name: str) -> str:
     
     # Determine HuggingFace repo based on model name
     if "3.1" in model_name or "multiplex" in model_name.lower():
-        repo_id = "facebook/sam3.1"
+        repo_id = "research21/sam3.1"
         hf_filename = "sam3.1_multiplex.pt" if "multiplex" in model_name else model_name
     else:
         repo_id = "facebook/sam3"
@@ -642,7 +642,7 @@ class LoadNativeSAM3VideoModel:
                         f"   cd /tmp && rm -rf sam3\n"
                         f"   git clone https://github.com/facebookresearch/sam3.git\n"
                         f"   cd sam3 && pip install -e .\n\n"
-                        f"2. Re-download the checkpoint from facebook/sam3.1 on HuggingFace\n\n"
+                        f"2. Re-download the checkpoint from research21/sam3.1 on HuggingFace\n\n"
                         f"3. Restart ComfyUI\n\n"
                         f"Original error (truncated): {error_msg[:500]}..."
                     )
