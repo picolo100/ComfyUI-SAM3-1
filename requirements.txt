@@ -9,3 +9,4 @@ tqdm>=4.66.1
 regex
 safetensors
 einops
+pycocotools
